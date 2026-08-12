@@ -26,12 +26,11 @@
 packReq <- c("rhdf5", "REddyProc", "ncdf4","reshape2","ggplot2","gridExtra","knitr","naniar", "Rfast", "neonUtilities", "googleCloudStorageR","dplyr", "tidyr","mlegp")
 
 #Install and load all required packages
-lapply(packReq, function(x) {
-  print(x)
-  if(require(x, character.only = TRUE) == FALSE) {
-    install.packages(x, dependencies=TRUE, repos='http://cran.rstudio.com/')
-    library(x, character.only = TRUE)
-  }})
+#UF: neon-forcing conda env is complete -- fail fast instead of a live-CRAN install.
+invisible(lapply(packReq, function(x) {
+  if(!requireNamespace(x, quietly = TRUE)) stop("Missing from env: ", x)
+  library(x, character.only = TRUE)
+}))
 
 
 #update neonUtilities
@@ -53,7 +52,7 @@ options(stringsAsFactors=F)
 ###############################################################################
 ##!Set options to local vs s3 and define S3 ENV variables
 ###############################################################################
-MethOut <- c("local", "gcs")[2] # CHANGE ME FOR DESIRED CONFIGURATION
+MethOut <- c("local", "gcs")[1] #UF: local output (offline OSBS run; upstream default was [2]=gcs)
 
 if(MethOut == "gcs"){
 
@@ -104,13 +103,15 @@ lowmem <- FALSE
 maxmonths <- 2 
 user <- 'David Durden'
 methPlot <- TRUE #Should data quality plots be created?
+#UF: offline mode -- products pre-staged in DirDnld by download_raw.R; gates all downloads/wipes.
+doDnld <- FALSE
 
 #The version data for the FP standard conversion processing
 ver <- paste0("v3/",format(Sys.time(), "%Y%m%d"))
 #Base directory for output
 DirOutBase <-paste0("~/eddy/data/CLM/",ver)
 #Download directory for HDF5 files from the API
-DirDnld= c("/home/ddurden/eddy/tmp/CLM",tempdir())[1]
+DirDnld= c("/blue/gerber/earth_models/neon/raw",tempdir())[1] #UF: shared archive base (line 131 appends /Site)
 
 
 # check environment variables for eddy4R workflow, if it exists grab ENV variables 
@@ -192,13 +193,16 @@ dateEnd <- as.Date(dateEnd)
 ##############################################################################
 
 #Download zip files
-neonUtilities::zipsByProduct(dpID=idDpFlux, package=Pack, 
-                             site=Site, 
+#UF: EC bundle pre-staged by download_raw.R; download only when doDnld=TRUE.
+if(doDnld){
+neonUtilities::zipsByProduct(dpID=idDpFlux, package=Pack,
+                             site=Site,
                              startdate= as.character(dateBgn),
                              enddate= as.character(dateEnd),
                              savepath= DirDnld,
                              include.provisional=TRUE,
                              check.size=F)
+}
 
 #Grab one zip file for the site to extract metadata and unzip
 zipFile <- base::list.files(paste0(DirDnld,"/filesToStack00200"), pattern = ".zip", 
@@ -483,10 +487,13 @@ dataDfFlux$qfTurbH2oFinl <- NULL
 dataDfFlux$qfTurbFlow <- NULL
 
 #Remove extraction directory
+#UF: guard both wipes behind doDnld -- DirDnld is the shared archive; never wipe it offline.
+if(doDnld){
 # clean up temp directory
 base::file.remove(base::list.files(DirExtr, full.names = TRUE, recursive = TRUE), force = TRUE)
 # clean up temp directory
 base::file.remove(base::list.files(DirDnld, full.names = TRUE, recursive = TRUE), force = TRUE)
+}
 
 ##############################################################################
 ##!Met data
@@ -536,7 +543,7 @@ dataMet <- lapply(listDpNum, function(x){
 
 
 #Get site codes for sites with primary precip data
-sitePrecip <- neonUtilities::getProductInfo("DP1.00044.001")$siteCodes$siteCode
+sitePrecip <- "OSBS" #UF: hardcode -- OSBS verified to have primary precip DP1.00044.001; drops the last live-network call
 
 
 #Test if site has primary precip
