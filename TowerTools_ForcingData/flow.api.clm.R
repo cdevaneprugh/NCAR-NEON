@@ -131,6 +131,29 @@ if("METHPARAFLOW" %in% base::names(base::Sys.getenv())) {
 #H5 extraction directory
 DirDnld <- paste0(DirDnld,"/", Site)
 
+#UF (edit C): stacking (stackEddy/stackByTable) mutates -- and stackByTable deletes --
+# the input zips in filepath, so never stack the read-only shared archive in place.
+# For an offline run, copy the staged .zip files to a per-session tempdir working copy
+# and repoint DirDnld at it. tempdir() honors $TMPDIR (wrapper-set, off shared /tmp),
+# is unique per R session (concurrent-safe) and auto-removed on exit; the archive
+# keeps only its .zip files.
+if(!doDnld){
+  archiveDir <- DirDnld
+  DirDnld <- file.path(tempdir(), "neon_work", Site)
+  if(dir.exists(DirDnld)) unlink(DirDnld, recursive = TRUE)
+  dir.create(DirDnld, recursive = TRUE, showWarnings = FALSE)
+  for(sd in list.dirs(archiveDir, recursive = FALSE)){
+    z <- list.files(sd, full.names = TRUE)
+    z <- z[endsWith(z, ".zip")]
+    if(length(z)){
+      dst <- file.path(DirDnld, basename(sd))
+      dir.create(dst, showWarnings = FALSE)
+      file.copy(z, dst)
+    }
+  }
+  message("UF offline: copied staged zips ", archiveDir, " -> ", DirDnld)
+}
+
 #H5 extraction directory
 DirExtr <- paste0(DirDnld,"/extr/", Site)
 #Create input directory for double zip files
@@ -391,6 +414,16 @@ dataDfFlux <- timeRglr$dataRglr
 dataDfFlux$TIMESTAMP_START <- NULL
 dataDfFlux$TIMESTAMP_END <- NULL
 dataDfFlux$TIMESTAMP <- timeRglr$timeRglr+ lubridate::minutes(30)
+#UF (edit T): clip the regularized flux frame to the requested window so a sub-window
+# run against a full pre-staged archive honors DATEBGN/DATEEND. Use REddyProc's
+# period-end convention (timestamps are END-of-half-hour, so a full day is the
+# half-open interval (day 00:00, next-day 00:00]); this keeps complete days and the
+# 00:30..00:00 record set REddyProc requires. dateBgn was rolled back 1 day at :152,
+# so dateBgn+1 = the requested start. No-op when the window == the archive span.
+# NOTE: REddyProc needs >= 90 days of flux; windows shorter than that fail upstream.
+tsLo <- as.POSIXct(paste0(dateBgn + 1, " 00:00:00"), tz = "UTC")
+tsHi <- as.POSIXct(paste0(dateEnd + 1, " 00:00:00"), tz = "UTC")
+dataDfFlux <- dataDfFlux[dataDfFlux$TIMESTAMP > tsLo & dataDfFlux$TIMESTAMP <= tsHi, ]
  # dataDfFlux$TIMESTAMP_START <- strftime(timeRglr$timeRglr , format = "%Y%m%d%H%M")
  # dataDfFlux$TIMESTAMP_END <- strftime(timeRglr$timeRglr+ lubridate::minutes(30), format = "%Y%m%d%H%M")
 
@@ -509,7 +542,7 @@ base::file.remove(base::list.files(DirDnld, full.names = TRUE, recursive = TRUE)
 
 
 #List of DP numbers by eddy4R DP names
-listDpNum <- c( "PRECTmms_MDS" = "DP1.00006.001","rH" = "DP1.00098.001", "FLDS_MDS" = "DP1.00023.001", "Rg" = "DP1.00023.001", "Pa_MDS" = "DP1.00004.001", "TBOT" = "DP1.00003.001", "PAR" = "DP1.00024.001", "SW_DIR" = "DP1.00014.001", "WS_MDS" = "DP1.00001.001")
+listDpNum <- c( "PRECTmms_MDS" = "DP1.00045.001","rH" = "DP1.00098.001", "FLDS_MDS" = "DP1.00023.001", "Rg" = "DP1.00023.001", "Pa_MDS" = "DP1.00004.001", "TBOT" = "DP1.00003.001", "PAR" = "DP1.00024.001", "SW_DIR" = "DP1.00014.001", "WS_MDS" = "DP1.00001.001")
 
 #names for individual variables of interest
 varDp <- c("PRECTmms_MDS" = "SECPRE_30min", "rH" = "RH_30min", "FLDS_MDS" = "SLRNR_30min", "Rg" = "SLRNR_30min", "Pa_MDS" = "BP_30min", "TBOT" = "TAAT_30min", "PAR" = "PARPAR_30min", "SW_DIR" = "SRDDP_30min", "WS_MDS" = "twoDWSD_30min")  #was twoDWSD_30min #Currently using the relative humidity from the soil array, tower top was not reporting data at HARV during this time
@@ -526,17 +559,15 @@ subVarQf <- c("PRECTmms_MDS" = "secPrecipFinalQF", "rH" = "RHFinalQF", "FLDS_MDS
 
 ##Grab data for data products using Noble package
 dataMet <- lapply(listDpNum, function(x){
-  #x <- listDpNum[2]
-  #If statement to grab secondary precip data at TOOK for the TOOL site
-  tmpSite <- ifelse(Site == "TOOL" & x == "DP1.00006.001", "TOOK", Site)
-  
-  
-  try(expr = neonUtilities::loadByProduct(site = tmpSite, dpID = x, 
-                                          startdate = as.character(dateBgn - 1), 
-                                          enddate = as.character(dateEnd), 
-                                          package = Pack, timeIndex = TimeAgr, 
-                                          include.provisional = TRUE, 
-                                          check.size = FALSE), 
+  #UF (edit S): offline -- stack pre-staged zips instead of loadByProduct. stackByTable
+  #  DELETES its input zips, and FLDS_MDS + Rg both map to DP1.00023.001, so copy this
+  #  product's zips to a fresh tempdir per call and stack that (never the shared source).
+  num <- strsplit(x, ".", fixed = TRUE)[[1]][2]
+  src <- file.path(DirDnld, paste0("filesToStack", num))
+  wrk <- tempfile("ftk_"); dir.create(wrk)
+  zz <- list.files(src, full.names = TRUE); zz <- zz[endsWith(zz, ".zip")]
+  file.copy(zz, wrk)
+  try(expr = neonUtilities::stackByTable(filepath = wrk, savepath = "envt"),
       silent = TRUE)
   })
 
@@ -551,12 +582,7 @@ if(Site %in% sitePrecip){
 
 
 P <- 
-  try(expr = neonUtilities::loadByProduct(site = Site, dpID = "DP1.00044.001", 
-                                          startdate = as.character(dateBgn - 1), 
-                                          enddate = as.character(dateEnd), 
-                                          package = Pack,  
-                                          include.provisional = TRUE,
-                                          check.size = FALSE), 
+  try(expr = neonUtilities::stackByTable(filepath = file.path(DirDnld, "filesToStack00044"), savepath = "envt"), 
       silent = TRUE)
 
 #P$WEIPRE_60min$precipBulk
@@ -945,8 +971,12 @@ EddyProc.C$sMDSGapFill('Pa_MDS', FillAll=FALSE)
 EddyProc.C$sMDSGapFill('FLDS_MDS', FillAll=FALSE) 
 EddyProc.C$sMDSGapFill('Rg', FillAll=FALSE) 
 EddyProc.C$sMDSGapFill('radNet', FillAll=FALSE) 
-EddyProc.C$sMRFluxPartition()
-EddyProc.C$sGLFluxPartition()
+#UF: OSBS EC CO2 flux (NEE/FC) is absent at the NEON source (raw flux all-NA, own QC
+#  flag all-bad) -> sMDSGapFill('NEE') makes no NEE_f, so partitioning cannot run. Make
+#  it non-fatal: the author already NaN-fills GPP_f at :992, and v4 (which exists for
+#  OSBS) can only have been generated this way. The atm forcing uses no CO2 variable.
+try(EddyProc.C$sMRFluxPartition(), silent = TRUE)
+try(EddyProc.C$sGLFluxPartition(), silent = TRUE)
 # SCBI won't calculate GPP, unsure why?
 # KONZ won't calculate GPP, 
 #      "Detected following columns in dataset to be non numeric: FP_VARnight!"
@@ -1048,6 +1078,15 @@ dataClm <- cbind(dataClm,EvalDataUnfilled[,c("RadDif","RadDir","qfNEE", "qfFC", 
 
 #Combine data with qap-filling quality flags
 dataClm <- cbind(dataClm, qfGfClm)
+
+#UF: NaN-fill any CO2-derived eval column still missing after a non-fatal partition
+#  (OSBS has no CO2 flux: NEE/FC all-NA -> no NEE_f/FC_f; partition -> no GPP*/Reco).
+#  The atm forcing uses none of these; this only lets the eval/flux file finalize (the
+#  monthly loop writes atm+eval in one nc pass, so an eval gap would corrupt the atm file).
+for(cc in c("NEE","FC","GPP","GPP_DT","Reco_DT"))
+  if(!cc %in% names(dataClm)) dataClm[[cc]] <- rep(NaN, nrow(dataClm))
+for(cc in c("NEE_fqc","GPP_fqc"))
+  if(!cc %in% names(dataClm)) dataClm[[cc]] <- rep(0L, nrow(dataClm))
 
 ##############################################################################
 ##!Write CLM output
