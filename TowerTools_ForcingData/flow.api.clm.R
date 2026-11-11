@@ -101,7 +101,9 @@ dateEnd <- "2024-12-31"
 # if lowmem == TRUE, how many months of data should stackEddy handle at a time?
 lowmem <- FALSE
 maxmonths <- 2 
-user <- 'David Durden'
+#UF: NetCDF global attrs created_by / supported_by, overridable for non-NCAR runs.
+user <- Sys.getenv("NEON_CREATED_BY", unname(Sys.info()[["user"]]))
+supportedBy <- Sys.getenv("NEON_SUPPORTED_BY", "This data development was funded by the National Science Foundation (NSF) solicitation PD 20-7684")
 methPlot <- TRUE #Should data quality plots be created?
 #UF: offline mode -- products pre-staged in DirDnld by download_raw.R; gates all downloads/wipes.
 doDnld <- FALSE
@@ -111,7 +113,7 @@ ver <- paste0("v3/",format(Sys.time(), "%Y%m%d"))
 #Base directory for output
 DirOutBase <-paste0("~/eddy/data/CLM/",ver)
 #Download directory for HDF5 files from the API
-DirDnld= c("/blue/gerber/earth_models/neon/raw",tempdir())[1] #UF: shared archive base (line 131 appends /Site)
+DirDnld= tempdir() #UF: offline runs read the raw archive from NEON_DIRDNLD (set below)
 
 
 # check environment variables for eddy4R workflow, if it exists grab ENV variables 
@@ -130,15 +132,18 @@ if("METHPARAFLOW" %in% base::names(base::Sys.getenv())) {
 
 #H5 extraction directory
 DirDnld <- paste0(DirDnld,"/", Site)
+#UF: NEON_DIRDNLD = the site's raw archive (e.g. data/neon_raw/OSBS from download_raw.R)
+if (nzchar(Sys.getenv("NEON_DIRDNLD"))) DirDnld <- Sys.getenv("NEON_DIRDNLD")
 
 #UF (edit C): stacking (stackEddy/stackByTable) mutates -- and stackByTable deletes --
-# the input zips in filepath, so never stack the read-only shared archive in place.
+# the input zips in filepath, so never stack the local raw archive in place.
 # For an offline run, copy the staged .zip files to a per-session tempdir working copy
-# and repoint DirDnld at it. tempdir() honors $TMPDIR (wrapper-set, off shared /tmp),
+# and repoint DirDnld at it. tempdir() honors $TMPDIR,
 # is unique per R session (concurrent-safe) and auto-removed on exit; the archive
 # keeps only its .zip files.
 if(!doDnld){
   archiveDir <- DirDnld
+  if (!dir.exists(archiveDir)) stop("Raw NEON archive not found: ", archiveDir, " -- set NEON_DIRDNLD (see download_raw.R)")
   DirDnld <- file.path(tempdir(), "neon_work", Site)
   if(dir.exists(DirDnld)) unlink(DirDnld, recursive = TRUE)
   dir.create(DirDnld, recursive = TRUE, showWarnings = FALSE)
@@ -520,7 +525,7 @@ dataDfFlux$qfTurbH2oFinl <- NULL
 dataDfFlux$qfTurbFlow <- NULL
 
 #Remove extraction directory
-#UF: guard both wipes behind doDnld -- DirDnld is the shared archive; never wipe it offline.
+#UF: guard both wipes behind doDnld -- never wipe the local raw archive in offline mode.
 if(doDnld){
 # clean up temp directory
 base::file.remove(base::list.files(DirExtr, full.names = TRUE, recursive = TRUE), force = TRUE)
@@ -561,7 +566,7 @@ subVarQf <- c("PRECTmms_MDS" = "secPrecipFinalQF", "rH" = "RHFinalQF", "FLDS_MDS
 dataMet <- lapply(listDpNum, function(x){
   #UF (edit S): offline -- stack pre-staged zips instead of loadByProduct. stackByTable
   #  DELETES its input zips, and FLDS_MDS + Rg both map to DP1.00023.001, so copy this
-  #  product's zips to a fresh tempdir per call and stack that (never the shared source).
+  #  product's zips to a fresh tempdir per call and stack that (never the archive itself).
   num <- strsplit(x, ".", fixed = TRUE)[[1]][2]
   src <- file.path(DirDnld, paste0("filesToStack", num))
   wrk <- tempfile("ftk_"); dir.create(wrk)
@@ -1272,11 +1277,11 @@ ncEval <- ncdf4::nc_create(fileOutEval, list(LATIXY,LONGXY,NEE,FC,FSH,EFLX_LH_TO
  
  ncdf4::ncatt_put(ncAtm, 0, "created_on",date()      ,prec=NA,verbose=FALSE,definemode=FALSE )
  ncdf4::ncatt_put(ncAtm, 0, "created_by",user,prec=NA,verbose=FALSE,definemode=FALSE )
- ncdf4::ncatt_put(ncAtm, 0, "created_from",fileOut   ,prec=NA,verbose=FALSE,definemode=FALSE )
+ ncdf4::ncatt_put(ncAtm, 0, "created_from",basename(fileOut)   ,prec=NA,verbose=FALSE,definemode=FALSE )
  ncdf4::ncatt_put(ncAtm, 0, "NEON site",Site         ,prec=NA,verbose=FALSE,definemode=FALSE )
  ncdf4::ncatt_put(ncAtm, 0, "TimeDiffUtcLt",metaSite$TimeDiffUtcLst          ,prec=NA,verbose=FALSE,definemode=FALSE )
  ncdf4::ncatt_put(ncAtm, 0, "created_with", "flow.api.clm.R",prec=NA,verbose=FALSE,definemode=FALSE )
- ncdf4::ncatt_put(ncAtm, 0, "supported_by", "This data development was funded by the National Science Foundation (NSF) solicitation PD 20-7684",prec=NA,verbose=FALSE,definemode=FALSE )
+ ncdf4::ncatt_put(ncAtm, 0, "supported_by", supportedBy,prec=NA,verbose=FALSE,definemode=FALSE )
  
  
  # Write some values to this variable on disk.
@@ -1353,11 +1358,11 @@ ncdf4::ncatt_put(ncEval, qfEFLX_LH_TOT_NSAE,"mode","time-dependent" ,prec=NA,ver
 #Global attributes
 ncdf4::ncatt_put(ncEval, 0, "created_on",date()      ,prec=NA,verbose=FALSE,definemode=FALSE )
 ncdf4::ncatt_put(ncEval, 0, "created_by",user,prec=NA,verbose=FALSE,definemode=FALSE )
-ncdf4::ncatt_put(ncEval, 0, "created_from",fileOut   ,prec=NA,verbose=FALSE,definemode=FALSE )
+ncdf4::ncatt_put(ncEval, 0, "created_from",basename(fileOut)   ,prec=NA,verbose=FALSE,definemode=FALSE )
 ncdf4::ncatt_put(ncEval, 0, "NEON site",Site         ,prec=NA,verbose=FALSE,definemode=FALSE )
 ncdf4::ncatt_put(ncEval, 0, "TimeDiffUtcLt",metaSite$TimeDiffUtcLst         ,prec=NA,verbose=FALSE,definemode=FALSE)
 ncdf4::ncatt_put(ncEval, 0, "created_with", "flow.api.clm.R",prec=NA,verbose=FALSE,definemode=FALSE )
-ncdf4::ncatt_put(ncEval, 0, "supported_by", "This data development was funded by the National Science Foundation (NSF) solicitation PD 20-7684",prec=NA,verbose=FALSE,definemode=FALSE )
+ncdf4::ncatt_put(ncEval, 0, "supported_by", supportedBy,prec=NA,verbose=FALSE,definemode=FALSE )
 
 #Close Netcdf file connection
 ncdf4::nc_close(ncAtm)
